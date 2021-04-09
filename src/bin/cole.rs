@@ -154,6 +154,8 @@ fn input(
 ) {
     let dt = time.delta_seconds();
 
+    println!("all the keypresses: {:?}", kprs.0);
+
     //updates continiously&independently of key events.
     for ks in kprs.0.values_mut() {
         if let KeyState::Released(t) = ks {
@@ -167,21 +169,22 @@ fn input(
         }
     }
 
-    println!("all the keypresses: {:?}", kprs.0);
-
     for (mut transform, mut text, mut scroll) in query.iter_mut() {
         for kev in key_evr.iter() {
-            //println!("{:?}", kev);
+            println!("{:?}", kev);
 
             let sc = kev.scan_code;
             let kc = kev.key_code;
             let st: KeyState;
 
+            //note, how about explicitly ignoring keys such as Win, etc?
+
+
             if kev.state == bevy::input::ElementState::Pressed {
                 if let Some(ks) = kprs.0.get_mut(&sc) {
                     if let KeyState::Released(_) = ks {
                         *ks = KeyState::JustPressed;
-                    } 
+                    }
                     st = *ks;
                 } else {
                     st = KeyState::JustPressed;
@@ -190,12 +193,17 @@ fn input(
             } else {
                 //key released
                 st = KeyState::JustReleased;
-                let ks = kprs.0.get_mut(&sc).unwrap(); //Released key must be present
-                *ks = st;
+
+                if let Some(ks) = kprs.0.get_mut(&sc) {
+                    *ks = st;
+                } else {
+                    kprs.0.insert(sc, st);
+                }
             }
 
             //println!("sc: {} st: {:?}", sc, st);
 
+            //note, duplication happens due to Press-Release events treated symmetrically here, rework
             match *m {
                 Mode::Normal => match sc {
                     34 => *m = Mode::Insert,
