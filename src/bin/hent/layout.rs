@@ -1,4 +1,3 @@
-
 pub fn scdv(sc: u32) -> char {
     //scancode to dvorak converter
     match sc {

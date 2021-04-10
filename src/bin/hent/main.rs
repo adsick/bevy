@@ -1,13 +1,30 @@
+mod keyboardal;
 mod layout;
+
+use keyboardal::*;
 
 use layout::scdv;
 
-use bevy::{input::keyboard::KeyboardInput, prelude::*};
+use bevy::{input::{keyboard::KeyboardInput}, prelude::*, text::Text2dSize};
 //use std::collections::HashMap;
-use bevy::utils::HashMap;
+//use bevy::utils::{HashMap, StableHashSet};
 
 const REPEAT_INTERVAL: f32 = 0.2;
 const DOWN_INTERVAL: f32 = 0.2;
+
+#[derive(Bundle)]
+struct Editor{
+    mode: Mode,
+    cursor: Cursor,
+    #[bundle]
+    text: Text2dBundle, //????
+    scroll: Scroll,
+    //commands vecdeque
+    //text or line/s
+    //cursor
+}
+
+
 
 struct Cursor {
     line: usize,
@@ -26,7 +43,8 @@ impl Default for Cursor {
 }
 
 #[derive(Debug)]
-enum Mode { //rename to editor mode
+enum Mode {
+    //rename to editor mode
     //future replace with Bevy's states
     Normal,
     Insert,
@@ -38,77 +56,24 @@ enum Command {
     PutString(String),
     RemoveBefore,
     RemoveAfter,
+
+    AddLine,
     RemoveLine,
 
     MoveCursorH(i16),
     MoveCursorV(i16),
+    
     //MoveCursor(i16, i16)
     //Repeat(u16, Box<Command>)
 }
 
-struct UiCurrentMode;
-struct UiLines;
+struct UiCurrentMode; //bad structure
+struct UiLines; //bad structure
 struct Scroll {
-    //used for scrolling, but actually is a good name for Vec<Line> thing
     cur: f32,
     max: f32,
     acc: f32, //acceleration
               //dec: f32
-}
-
-
-
-
-struct KeyPresses(HashMap<u32, KeyState>); //datastruct may be changed in the future
-
-impl KeyPresses {
-    fn new() -> Self {
-        KeyPresses(HashMap::default())
-    }
-    fn get_pressed(&self)->Vec<u32>{
-        let mut res = vec![];
-        for (sc, ks) in self.0.iter(){
-            if let KeyState::Pressed { s, t } = ks{
-                res.push(*sc);
-            } else if let KeyState::JustPressed { t } = ks{
-                res.push(*sc)
-            }
-        }
-        res
-    }
-
-    fn get_just_pressed(&self)->Vec<u32>{
-        let mut res = vec![];
-        for (sc, ks) in self.0.iter(){
-            if let KeyState::JustPressed { t } = ks{
-                res.push(*sc)
-            }
-        }
-        res
-    }
-
-    fn get_down(&self)->Vec<u32>{
-        let mut res = vec![];
-        for (sc, ks) in self.0.iter(){
-            if let KeyState::Pressed { s, t } = ks{
-                if *s > DOWN_INTERVAL{
-                    res.push(*sc);
-                }
-            }
-        }
-        res
-    }
-}
-
-// struct KeyPresses{
-//     keymap: HashMap<u32, KeyState>
-// }
-#[derive(Debug, PartialEq, Clone, Copy)]
-enum KeyState { //Just's are redundant(?) s = 0.0 is "Just"
-    JustPressed { t: u16 }, //u16 for repeated keypresses
-    JustReleased { s: f32, t: u16 },
-    Pressed { s: f32, t: u16 }, //seconds
-    Released { s: f32, t: u16 },
 }
 
 fn main() {
@@ -119,30 +84,25 @@ fn main() {
             ..Default::default()
         })
         .insert_resource(Mode::Normal)
-        .insert_resource(KeyPresses::new())
+        .insert_resource(KeyStrokes::new())
         .add_event::<Command>()
         .add_plugins(DefaultPlugins)
         .add_startup_system(setup.system())
         .add_system(input.system().label("input"))
-        .add_system(control.system())
-        .add_system(process.system().after("input"))
+        .add_system(control.system().after("input").label("control"))
+        .add_system(process.system().after("control"))
         .add_system(update_mode_label.system().after("input"))
         .add_system(scroll.system())
         .run();
 }
 
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
-    // 2d camera
-    // commands.spawn_bundle(PerspectiveCameraBundle {
-    //     transform: Transform::from_xyz(0.0, 0.0, 1000.0).looking_at(Vec3::ZERO, Vec3::Y),
-    //     ..Default::default()
-    // });
 
     commands.spawn_bundle(OrthographicCameraBundle::new_2d());
 
     let font = asset_server.load("fonts/FiraMono-Medium.ttf");
 
-    let style_body = TextStyle {
+    let text_style_body = TextStyle {
         font: font.clone(),
         font_size: 60.0,
         color: Color::WHITE,
@@ -152,20 +112,20 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         .spawn_bundle(Text2dBundle {
             text: Text::with_section(
                 "This text is in the 2D scene.",
-                style_body,
+                text_style_body,
                 TextAlignment {
                     vertical: VerticalAlign::Center,
-                    horizontal: HorizontalAlign::Right,
+                    horizontal: HorizontalAlign::Left,
                 },
             ),
-            transform: Transform::from_xyz(-400.0, 0.0, 0.0),
+            transform: Transform::from_xyz(400.0, 0.0, 0.0),
             ..Default::default()
         })
         .insert(UiLines)
         .insert(Scroll {
             cur: 0.0,
-            max: 100.0,
-            acc: 100.0,
+            max: 1000.0,
+            acc: 1000.0,
         });
 
     commands
@@ -179,10 +139,10 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                 },
                 TextAlignment {
                     vertical: VerticalAlign::Center,
-                    horizontal: HorizontalAlign::Right,
+                    horizontal: HorizontalAlign::Center,
                 },
             ),
-            transform: Transform::from_xyz(-600.0, 000.0, 0.0),
+            transform: Transform::from_xyz(-400.0, -200.0, 0.0),
             ..Default::default()
         })
         .insert(UiCurrentMode);
@@ -191,193 +151,206 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
 }
 
 fn input(
-    //mut query: Query<(&mut Transform, &mut Text, &mut Scroll), With<UiLines>>,
     mut key_evr: EventReader<KeyboardInput>,
-
-    mut cursor: ResMut<Cursor>,
+    mut keystrokes: ResMut<KeyStrokes>,
     time: Res<Time>,
-    mut kprs: ResMut<KeyPresses>,
-    mut m: ResMut<Mode>,
 ) {
     let dt = time.delta_seconds();
 
-    for kev in key_evr.iter() {
-        //println!("{:?}", kev);
+    keystrokes.update(dt); //comes first to allow 0.0 durations
 
-        let sc = kev.scan_code;
-        //let st: KeyState;
+    key_evr
+        .iter()
+        .for_each(|k| keystrokes.eat_keyboard_input(k));
 
-        //note, how about explicitly ignoring keys such as Win, etc?
-
-        if sc == 125 {
-            //ignore Win(Super)
-            continue;
-        }
-        if kev.state == bevy::input::ElementState::Pressed {
-            if let Some(ks) = kprs.0.get_mut(&sc) {
-                if let KeyState::Released { s, t } = ks {
-                    if *s < REPEAT_INTERVAL {
-                        //key has been pressed again
-                        *ks = KeyState::JustPressed { t: *t + 1 };
-                    } else {
-                        *ks = KeyState::JustPressed { t: 0 }; //change to 1?
-                                                              //unreachable!() //lol, no
-                    }
-                }
-                //st = *ks;
-            } else {
-                //st = KeyState::JustPressed{t: 0};
-                kprs.0.insert(sc, KeyState::JustPressed { t: 0 });
-            }
-        } else {
-            //key released
-
-            if let Some(ks) = kprs.0.get_mut(&sc) {
-                if let KeyState::Pressed { s, t } = ks {
-                    //it likely is pressed
-                    *ks = KeyState::JustReleased { s: *s, t: *t }; //we save the seconds and times
-                } else {
-                }
-            } else {
-                //this is very unlikely but possible
-                //st = KeyState::JustReleased{s: 0.0, t: 0};
-                kprs.0.insert(sc, KeyState::JustReleased { s: 0.0, t: 0 });
-            }
-        }
-    }
-    //println!("sc: {} st: {:?}", sc, st);
-
-    println!("all the keypresses: {:?}", kprs.0);
-
-    //updates continiously&independently of key events.
-    for ks in kprs.0.values_mut() {
-        //emit events here
-        //btw this looks like 1 frame latency when this is on top
-
-        //Released -> Released+dt
-        //Pressed -> Pressed+dt
-        //JustReleased -> Released s=0.0
-        //JustPressed -> Pressed s=0.0
-
-        if let KeyState::Released { s, t } = ks { //a lot of boilerplate
-            //you might t = 0; (depending on the s) but I'm not sure if it is necessary because of
-            *ks = KeyState::Released { s: *s + dt, t: *t };
-        } else if let KeyState::Pressed { s, t } = ks {
-            *ks = KeyState::Pressed { s: *s + dt, t: *t };
-        } else if let KeyState::JustReleased { s, t } = ks {
-            *ks = KeyState::Released { s: 0.0, t: *t };
-        } else if let KeyState::JustPressed { t } = ks {
-            *ks = KeyState::Pressed { s: 0.0, t: *t };
-        }
-    }
 }
 
-fn control(mut com_evw: EventWriter<Command>, m: Res<Mode>, kprs: Res<KeyPresses>) {
+fn control(
+    mut com_evw: EventWriter<Command>,
+    mut m: ResMut<Mode>,
+    keystrokes: Res<KeyStrokes>,
+    mut scroll: Query<&mut Scroll>,
+    time: Res<Time>,
+) {
+    let p = keystrokes.get_just_pressed();
+    if !p.is_empty(){
+        println!("just pressed: {:?}", keystrokes.get_just_pressed());
+    }
 
-    println!("{:?}", kprs.get_down());
+    let d = keystrokes.get_down();
+    if !d.is_empty(){
+        println!("down: {:?}", keystrokes.get_down());
+    }
 
-    // match *m {
-    //     Mode::Normal => match sc {
-    //         34 => *m = Mode::Insert,
-    //         35 => com_evw.send(Command::RemoveLine), //prob to be changed
-    //         36 => {
+    let dp = keystrokes.get_double_pressed();
+    if !dp.is_empty(){
+        println!("double-pressed: {:?}", keystrokes.get_double_pressed());
+    }
 
-    //             cursor.line += 1;
-    //             cursor.ind = None;
-    //         } //J move cursor down,
-    //         37 => {
-    //             cursor.col += 1;
-    //             cursor.ind = None;
-    //         } //H move cursor right, incremental ind optimization may be an option, now stick to lazy ind updating
+    let p = keystrokes.get_just_pressed().into_iter().next();
+    let d = keystrokes.get_down().into_iter().next();
+    let dp = keystrokes.get_double_pressed().into_iter().next();
 
-    //         50 => {
-    //             if let KeyState::Pressed { s, t } = st{
-    //                 scroll.cur = -(scroll.acc*s).clamp(0.0, scroll.max); //send event here?
-
-    //             }else if let KeyState::JustReleased { s, t } = st{
-    //                 scroll.cur = 0.0;
-    //             }
-    //         } //scrolldown //-= (scroll.max - scroll.cur)*scroll.acc*dt;
-    //         51 => {
-    //             scroll.cur += scroll.max;
-    //         } //scrollup
-    //         _ => scroll.cur = 0.0, //wrong, there is no code in fact
-
-    //         //57 => *m = Mode::Input,
-    //         _ => {}
-    //     },
-    //     Mode::Insert => {
-    //         if sc == 1 || sc == 58 {
-    //             //esc or caps key to go back to Normal mode
-    //             *m = Mode::Normal;
-    //         } else if kc == Some(KeyCode::Back) {
-    //             com_evw.send(Command::RemoveLine); //prob to be changed
-    //         } else {
-    //             //let mut nt = scdv(sc).to_string();
-
-    //             com_evw.send(Command::PutChar(scdv(sc)));
-    //         }
-    //     }
-    // }
-}
-
-fn scroll(time: Res<Time>, mut q: Query<(&mut Transform, &mut Scroll)>) {
     let dt = time.delta_seconds();
-    for (mut transform, scroll) in q.iter_mut() {
-        transform.translation.y += dt * scroll.cur;
+
+    let scroll = scroll.iter_mut();
+
+    match *m {
+        Mode::Normal => {
+            if let Some(p) = p {
+                match p {
+                    34 => *m = Mode::Insert,
+                    //35 => com_evw.send(Command::RemoveLine), //prob to be changed
+                    36 => com_evw.send(Command::MoveCursorV(1)),
+                     //J move cursor left (down in the future)
+                    37 => com_evw.send(Command::MoveCursorH(1)),
+                     //H move cursor right
+                    _ => {}
+                }
+            }
+            if let Some(d) = d { //a key is down
+                match d {
+                    50 => scroll.for_each(|mut s| s.cur = (s.cur - (s.acc * dt)).clamp(-s.max, 0.0)),
+                    51 => scroll.for_each(|mut s| s.cur = (s.cur + (s.acc * dt)).clamp(0.0, s.max)),
+                     //scrollup
+                    
+
+                    //57 => *m = Mode::Input,
+                    _ => {}
+                }
+            }
+
+
+            if let Some(dp) = dp {
+                match dp {
+                    35 => com_evw.send(Command::RemoveLine),
+                    _ => {}
+                }
+            }
+        }
+        Mode::Insert => {
+            if let Some(p) = p {
+                if p == 1 || p == 58 {
+                    //esc or caps key to go back to Normal mode
+                    *m = Mode::Normal;
+                } if p == 28 { //enter
+                    com_evw.send(Command::AddLine);
+                }
+                else {
+                    //let mut nt = scdv(sc).to_string();
+
+                    com_evw.send(Command::PutChar(scdv(p)));
+                }
+            }
+        }
     }
 }
 
 fn process(
     mut com_evr: EventReader<Command>,
     mut cursor: ResMut<Cursor>,
-    mut txt: Query<&mut Text>,
+    mut txt: Query<&mut Text, With<UiLines>>,
     mut m: ResMut<Mode>,
 ) {
-    let text = &mut txt.iter_mut().next().unwrap().sections[0].value;
+
+    //let text = &mut txt.iter_mut().next().unwrap().sections[0].value;
 
     for com in com_evr.iter() {
         println!("got a command! {:?}", com);
 
-        let com = com;
-
         match com {
+            &Command::MoveCursorH(d) => { //put this code inside of the Cursor itself 
+                if d < 0{
+                    cursor.col-=d.wrapping_abs() as usize;
+                } else {
+                    cursor.col+=d as usize;
+                }
+                cursor.ind = None;
+                println!("Moved cursor. col: {}", cursor.col);
+            },
+
+            &Command::MoveCursorV(d) =>{//put this code inside of the Cursor itself 
+                if d < 0{
+                    cursor.line-=d.wrapping_abs() as usize;
+                } else {
+                    cursor.line+=d as usize;
+                }
+                cursor.ind = None;
+                println!("Moved cursor. line: {}", cursor.line);
+            }
+
+            Command::AddLine => {
+                if let Some(ts) = txt.single_mut().unwrap().sections.get_mut(cursor.line){ //bug: does nothing when there are no lines
+                    let style = ts.style.clone();
+                    cursor.line+=1;
+                    cursor.ind = None;
+                    if ts.value.chars().last() != Some('\n'){ //kostyl
+                        ts.value.push('\n');
+                    }
+                    txt.single_mut().unwrap().sections.insert(cursor.line, TextSection{value: "new text section!".to_string(), style});
+                }
+
+
+
+            }
+
             Command::RemoveLine => {
-                text.clear();
+                println!("removing a line... cursor.line: {}", cursor.line);
+                txt.iter_mut().next().unwrap().sections.remove(cursor.line);
+                //text.clear();
+                cursor.line = cursor.line.saturating_sub(1);
                 cursor.col = 0;
                 cursor.ind = None;
+                println!("removed a line! cursor.line: {}", cursor.line);
             }
-            //updates the ind so it safely fits chars, also updates cursor.col to fit the line
             &Command::PutChar(ch) => {
                 //refactor to another function/system or validate(?) the ind on mutations directly
-                if cursor.ind.is_none() {
-                    cursor.ind = Some(0);
-                    let mut colmax = 0;
-                    for (n, (i, c)) in text.char_indices().enumerate() {
-                        print!("({}; {})", c, n);
-                        if n == cursor.col {
-                            break;
+                //updates the ind so it safely fits chars, also updates cursor.col to fit the line
+
+                if let Some(ts) = txt.single_mut().unwrap().sections.get_mut(cursor.line){
+                    if cursor.ind.is_none() {
+                        cursor.ind = Some(0);
+                        let mut colmax = 0;
+                        for (n, (i, c)) in ts.value.char_indices().enumerate() {
+                            print!("({}; {})", c, n);
+                            if n == cursor.col {
+                                break;
+                            }
+                            colmax = n + 1;
+                            cursor.ind = Some(i + 1);
                         }
-                        colmax = n + 1;
-                        cursor.ind = Some(i + 1);
+                        cursor.col = colmax; //limits the col to the end of the line
+                        println!();
                     }
-                    cursor.col = colmax; //limits the col to the end of the line
-                    println!();
+    
+                    ts.value.insert(cursor.ind.unwrap_or(0), ch);
+                    if let Some(i) = &mut cursor.ind {
+                        let l = ch.len_utf8();
+                        *i += l; //updates the ind
+                        if l > 0 {
+                            //probably unnecessary check
+                            cursor.col += 1; //char printed, update the col
+                        }
+                    }
+                    println!("cursor: col {}, ind {:?}", cursor.col, cursor.ind);
+
+                } else {
+                    println!("cursor out of range! (cursor.line: {})", cursor.line);
                 }
 
-                text.insert(cursor.ind.unwrap_or(0), ch);
-                if let Some(i) = &mut cursor.ind {
-                    let l = ch.len_utf8();
-                    *i += l; //updates the ind
-                    if l > 0 {
-                        //probably unnecessary check
-                        cursor.col += 1; //char printed, update the col
-                    }
-                }
-                println!("cursor: col {}, ind {:?}", cursor.col, cursor.ind);
             }
             _ => {}
         }
+    }
+}
+
+fn scroll(time: Res<Time>, mut q: Query<(&mut Transform, &mut Scroll)>) {
+    let dt = time.delta_seconds();
+    for (mut transform, mut scroll) in q.iter_mut() {
+        //println!("scroll.cur: {}", scroll.cur);
+        transform.translation.y += dt * scroll.cur;
+
+        //scroll.cur-=scroll.cur.signum()*scroll.acc*dt; //rework this to completly new scroll system later 
     }
 }
 
@@ -389,4 +362,3 @@ fn update_mode_label(mut t: Query<&mut Text, With<UiCurrentMode>>, m: Res<Mode>)
         Mode::Insert => t.sections[0].value = "INSERT MODE".to_string(),
     }
 }
-
