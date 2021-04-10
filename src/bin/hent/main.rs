@@ -1,5 +1,14 @@
+mod layout;
+
+use layout::scdv;
+
 use bevy::{input::keyboard::KeyboardInput, prelude::*};
-use std::collections::HashMap;
+//use std::collections::HashMap;
+use bevy::utils::HashMap;
+
+const REPEAT_INTERVAL: f32 = 0.2;
+const DOWN_INTERVAL: f32 = 0.2;
+
 struct Cursor {
     line: usize,
     col: usize,
@@ -17,7 +26,7 @@ impl Default for Cursor {
 }
 
 #[derive(Debug)]
-enum Mode {
+enum Mode { //rename to editor mode
     //future replace with Bevy's states
     Normal,
     Insert,
@@ -47,22 +56,59 @@ struct Scroll {
               //dec: f32
 }
 
-struct KeyPresses(HashMap<u32, KeyState>);
+
+
+
+struct KeyPresses(HashMap<u32, KeyState>); //datastruct may be changed in the future
 
 impl KeyPresses {
     fn new() -> Self {
-        KeyPresses(HashMap::new())
+        KeyPresses(HashMap::default())
+    }
+    fn get_pressed(&self)->Vec<u32>{
+        let mut res = vec![];
+        for (sc, ks) in self.0.iter(){
+            if let KeyState::Pressed { s, t } = ks{
+                res.push(*sc);
+            } else if let KeyState::JustPressed { t } = ks{
+                res.push(*sc)
+            }
+        }
+        res
+    }
+
+    fn get_just_pressed(&self)->Vec<u32>{
+        let mut res = vec![];
+        for (sc, ks) in self.0.iter(){
+            if let KeyState::JustPressed { t } = ks{
+                res.push(*sc)
+            }
+        }
+        res
+    }
+
+    fn get_down(&self)->Vec<u32>{
+        let mut res = vec![];
+        for (sc, ks) in self.0.iter(){
+            if let KeyState::Pressed { s, t } = ks{
+                if *s > DOWN_INTERVAL{
+                    res.push(*sc);
+                }
+            }
+        }
+        res
     }
 }
+
 // struct KeyPresses{
 //     keymap: HashMap<u32, KeyState>
 // }
 #[derive(Debug, PartialEq, Clone, Copy)]
-enum KeyState {
-    JustPressed,
-    JustReleased,
-    Pressed(f32), //seconds
-    Released(f32),
+enum KeyState { //Just's are redundant(?) s = 0.0 is "Just"
+    JustPressed { t: u16 }, //u16 for repeated keypresses
+    JustReleased { s: f32, t: u16 },
+    Pressed { s: f32, t: u16 }, //seconds
+    Released { s: f32, t: u16 },
 }
 
 fn main() {
@@ -78,6 +124,7 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_startup_system(setup.system())
         .add_system(input.system().label("input"))
+        .add_system(control.system())
         .add_system(process.system().after("input"))
         .add_system(update_mode_label.system().after("input"))
         .add_system(scroll.system())
@@ -118,7 +165,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         .insert(Scroll {
             cur: 0.0,
             max: 100.0,
-            acc: 10.0,
+            acc: 100.0,
         });
 
     commands
@@ -144,105 +191,134 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
 }
 
 fn input(
-    mut query: Query<(&mut Transform, &mut Text, &mut Scroll), With<UiLines>>,
+    //mut query: Query<(&mut Transform, &mut Text, &mut Scroll), With<UiLines>>,
     mut key_evr: EventReader<KeyboardInput>,
-    mut com_evw: EventWriter<Command>,
+
     mut cursor: ResMut<Cursor>,
-    mut time: Res<Time>,
+    time: Res<Time>,
     mut kprs: ResMut<KeyPresses>,
     mut m: ResMut<Mode>,
 ) {
     let dt = time.delta_seconds();
 
+    for kev in key_evr.iter() {
+        //println!("{:?}", kev);
+
+        let sc = kev.scan_code;
+        //let st: KeyState;
+
+        //note, how about explicitly ignoring keys such as Win, etc?
+
+        if sc == 125 {
+            //ignore Win(Super)
+            continue;
+        }
+        if kev.state == bevy::input::ElementState::Pressed {
+            if let Some(ks) = kprs.0.get_mut(&sc) {
+                if let KeyState::Released { s, t } = ks {
+                    if *s < REPEAT_INTERVAL {
+                        //key has been pressed again
+                        *ks = KeyState::JustPressed { t: *t + 1 };
+                    } else {
+                        *ks = KeyState::JustPressed { t: 0 }; //change to 1?
+                                                              //unreachable!() //lol, no
+                    }
+                }
+                //st = *ks;
+            } else {
+                //st = KeyState::JustPressed{t: 0};
+                kprs.0.insert(sc, KeyState::JustPressed { t: 0 });
+            }
+        } else {
+            //key released
+
+            if let Some(ks) = kprs.0.get_mut(&sc) {
+                if let KeyState::Pressed { s, t } = ks {
+                    //it likely is pressed
+                    *ks = KeyState::JustReleased { s: *s, t: *t }; //we save the seconds and times
+                } else {
+                }
+            } else {
+                //this is very unlikely but possible
+                //st = KeyState::JustReleased{s: 0.0, t: 0};
+                kprs.0.insert(sc, KeyState::JustReleased { s: 0.0, t: 0 });
+            }
+        }
+    }
+    //println!("sc: {} st: {:?}", sc, st);
+
     println!("all the keypresses: {:?}", kprs.0);
 
     //updates continiously&independently of key events.
     for ks in kprs.0.values_mut() {
-        if let KeyState::Released(t) = ks {
-            *ks = KeyState::Released(*t + dt);
-        } else if let KeyState::Pressed(t) = ks {
-            *ks = KeyState::Pressed(*t + dt);
-        } else if let KeyState::JustReleased = ks {
-            *ks = KeyState::Released(0.0);
-        } else if let KeyState::JustPressed = ks {
-            *ks = KeyState::Pressed(0.0);
+        //emit events here
+        //btw this looks like 1 frame latency when this is on top
+
+        //Released -> Released+dt
+        //Pressed -> Pressed+dt
+        //JustReleased -> Released s=0.0
+        //JustPressed -> Pressed s=0.0
+
+        if let KeyState::Released { s, t } = ks { //a lot of boilerplate
+            //you might t = 0; (depending on the s) but I'm not sure if it is necessary because of
+            *ks = KeyState::Released { s: *s + dt, t: *t };
+        } else if let KeyState::Pressed { s, t } = ks {
+            *ks = KeyState::Pressed { s: *s + dt, t: *t };
+        } else if let KeyState::JustReleased { s, t } = ks {
+            *ks = KeyState::Released { s: 0.0, t: *t };
+        } else if let KeyState::JustPressed { t } = ks {
+            *ks = KeyState::Pressed { s: 0.0, t: *t };
         }
     }
+}
 
-    for (mut transform, mut text, mut scroll) in query.iter_mut() {
-        for kev in key_evr.iter() {
-            println!("{:?}", kev);
+fn control(mut com_evw: EventWriter<Command>, m: Res<Mode>, kprs: Res<KeyPresses>) {
 
-            let sc = kev.scan_code;
-            let kc = kev.key_code;
-            let st: KeyState;
+    println!("{:?}", kprs.get_down());
 
-            //note, how about explicitly ignoring keys such as Win, etc?
+    // match *m {
+    //     Mode::Normal => match sc {
+    //         34 => *m = Mode::Insert,
+    //         35 => com_evw.send(Command::RemoveLine), //prob to be changed
+    //         36 => {
 
+    //             cursor.line += 1;
+    //             cursor.ind = None;
+    //         } //J move cursor down,
+    //         37 => {
+    //             cursor.col += 1;
+    //             cursor.ind = None;
+    //         } //H move cursor right, incremental ind optimization may be an option, now stick to lazy ind updating
 
-            if kev.state == bevy::input::ElementState::Pressed {
-                if let Some(ks) = kprs.0.get_mut(&sc) {
-                    if let KeyState::Released(_) = ks {
-                        *ks = KeyState::JustPressed;
-                    }
-                    st = *ks;
-                } else {
-                    st = KeyState::JustPressed;
-                    kprs.0.insert(sc, st);
-                }
-            } else {
-                //key released
-                st = KeyState::JustReleased;
+    //         50 => {
+    //             if let KeyState::Pressed { s, t } = st{
+    //                 scroll.cur = -(scroll.acc*s).clamp(0.0, scroll.max); //send event here?
 
-                if let Some(ks) = kprs.0.get_mut(&sc) {
-                    *ks = st;
-                } else {
-                    kprs.0.insert(sc, st);
-                }
-            }
+    //             }else if let KeyState::JustReleased { s, t } = st{
+    //                 scroll.cur = 0.0;
+    //             }
+    //         } //scrolldown //-= (scroll.max - scroll.cur)*scroll.acc*dt;
+    //         51 => {
+    //             scroll.cur += scroll.max;
+    //         } //scrollup
+    //         _ => scroll.cur = 0.0, //wrong, there is no code in fact
 
-            //println!("sc: {} st: {:?}", sc, st);
+    //         //57 => *m = Mode::Input,
+    //         _ => {}
+    //     },
+    //     Mode::Insert => {
+    //         if sc == 1 || sc == 58 {
+    //             //esc or caps key to go back to Normal mode
+    //             *m = Mode::Normal;
+    //         } else if kc == Some(KeyCode::Back) {
+    //             com_evw.send(Command::RemoveLine); //prob to be changed
+    //         } else {
+    //             //let mut nt = scdv(sc).to_string();
 
-            //note, duplication happens due to Press-Release events treated symmetrically here, rework
-            match *m {
-                Mode::Normal => match sc {
-                    34 => *m = Mode::Insert,
-                    35 => com_evw.send(Command::RemoveLine), //prob to be changed
-                    36 => {
-                        cursor.line += 1;
-                        cursor.ind = None;
-                    } //J move cursor down,
-                    37 => {
-                        cursor.col += 1;
-                        cursor.ind = None;
-                    } //H move cursor right, incremental ind optimization may be an option, now stick to lazy ind updating
-
-                    50 => {
-                        scroll.cur -= scroll.max; //send event here?
-                    } //scrolldown //-= (scroll.max - scroll.cur)*scroll.acc*dt;
-                    51 => {
-                        scroll.cur += scroll.max;
-                    } //scrollup
-                    _ => scroll.cur = 0.0, //wrong, there is no code in fact
-
-                    //57 => *m = Mode::Input,
-                    _ => {}
-                },
-                Mode::Insert => {
-                    if sc == 1 || sc == 58 {
-                        //esc or caps key to go back to Normal mode
-                        *m = Mode::Normal;
-                    } else if kc == Some(KeyCode::Back) {
-                        com_evw.send(Command::RemoveLine); //prob to be changed
-                    } else {
-                        //let mut nt = scdv(sc).to_string();
-
-                        com_evw.send(Command::PutChar(scdv(sc)));
-                    }
-                }
-            }
-        }
-    }
+    //             com_evw.send(Command::PutChar(scdv(sc)));
+    //         }
+    //     }
+    // }
 }
 
 fn scroll(time: Res<Time>, mut q: Query<(&mut Transform, &mut Scroll)>) {
@@ -314,55 +390,3 @@ fn update_mode_label(mut t: Query<&mut Text, With<UiCurrentMode>>, m: Res<Mode>)
     }
 }
 
-fn scdv(sc: u32) -> char {
-    //scancode to dvorak
-    match sc {
-        2 => '1',
-        3 => '2',
-        4 => '3',
-        5 => '4',
-        6 => '5',
-        7 => '6',
-        8 => '7',
-        9 => '8',
-        10 => '9',
-        11 => '0',
-        16 => '\'',
-        17 => ',',
-        18 => '.',
-        19 => 'p',
-        20 => 'y',
-        21 => 'f',
-        22 => 'g',
-        23 => 'c',
-        24 => 'r',
-        25 => 'l',
-        26 => '/',
-        27 => '=',
-        28 => '\n', //will create a new section in the future
-        30 => 'a',
-        31 => 'o',
-        32 => 'e',
-        33 => 'u',
-        34 => 'i',
-        35 => 'd',
-        36 => 'h',
-        37 => 't',
-        38 => 'n',
-        39 => 's',
-        40 => '-',
-        43 => '\\',
-        44 => ';',
-        45 => 'q',
-        46 => 'j',
-        47 => 'k',
-        48 => 'x',
-        49 => 'b',
-        50 => 'm',
-        51 => 'w',
-        52 => 'v',
-        53 => 'z',
-        57 => ' ',
-        _ => '\0',
-    }
-}
