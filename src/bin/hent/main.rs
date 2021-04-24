@@ -1,91 +1,30 @@
+mod editor;
 mod keyboardal;
 mod layout;
 
+
+use editor::{Cursor, Editor, EditorCommand, EditorCommands, EditorMode, Scroll, ScrollState};
 use keyboardal::*;
 
-use layout::scdv;
+use layout::Layout;
 
-use bevy::{input::{keyboard::KeyboardInput}, prelude::*, text::Text2dSize};
-//use std::collections::HashMap;
-//use bevy::utils::{HashMap, StableHashSet};
+use bevy::{input::keyboard::KeyboardInput, prelude::*};
 
 const REPEAT_INTERVAL: f32 = 0.2;
 const DOWN_INTERVAL: f32 = 0.2;
 
-#[derive(Bundle)]
-struct Editor{
-    mode: Mode,
-    cursor: Cursor,
-    #[bundle]
-    text: Text2dBundle, //????
-    scroll: Scroll,
-    //commands vecdeque
-    //text or line/s
-    //cursor
-}
-
-
-
-struct Cursor {
-    line: usize,
-    col: usize,
-    ind: Option<usize>, //where exactly put new chars
-}
-
-impl Default for Cursor {
-    fn default() -> Self {
-        Cursor {
-            line: 0,
-            col: 0,
-            ind: None,
-        }
-    }
-}
-
-#[derive(Debug)]
-enum Mode {
-    //rename to editor mode
-    //future replace with Bevy's states
-    Normal,
-    Insert,
-    //Visual
-}
-#[derive(Debug)]
-enum Command {
-    PutChar(char),
-    PutString(String),
-    RemoveBefore,
-    RemoveAfter,
-
-    AddLine,
-    RemoveLine,
-
-    MoveCursorH(i16),
-    MoveCursorV(i16),
-    
-    //MoveCursor(i16, i16)
-    //Repeat(u16, Box<Command>)
-}
-
 struct UiCurrentMode; //bad structure
-struct UiLines; //bad structure
-struct Scroll {
-    cur: f32,
-    max: f32,
-    acc: f32, //acceleration
-              //dec: f32
-}
+
+
 
 fn main() {
     App::build()
         .insert_resource(ClearColor(Color::rgb(0.2, 0.2, 0.2)))
         .insert_resource(WindowDescriptor {
-            title: "Cole".to_string(),
+            title: "Hentype".to_string(),
             ..Default::default()
         })
-        .insert_resource(Mode::Normal)
         .insert_resource(KeyStrokes::new())
-        .add_event::<Command>()
         .add_plugins(DefaultPlugins)
         .add_startup_system(setup.system())
         .add_system(input.system().label("input"))
@@ -97,7 +36,6 @@ fn main() {
 }
 
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
-
     commands.spawn_bundle(OrthographicCameraBundle::new_2d());
 
     let font = asset_server.load("fonts/FiraMono-Medium.ttf");
@@ -107,26 +45,6 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         font_size: 60.0,
         color: Color::WHITE,
     };
-
-    commands
-        .spawn_bundle(Text2dBundle {
-            text: Text::with_section(
-                "This text is in the 2D scene.",
-                text_style_body,
-                TextAlignment {
-                    vertical: VerticalAlign::Center,
-                    horizontal: HorizontalAlign::Left,
-                },
-            ),
-            transform: Transform::from_xyz(400.0, 0.0, 0.0),
-            ..Default::default()
-        })
-        .insert(UiLines)
-        .insert(Scroll {
-            cur: 0.0,
-            max: 1000.0,
-            acc: 1000.0,
-        });
 
     commands
         .spawn_bundle(Text2dBundle {
@@ -147,7 +65,34 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         })
         .insert(UiCurrentMode);
 
-    commands.insert_resource(Cursor::default());
+    //commands.insert_resource(Cursor::default());
+
+    let editor = Editor {
+        mode: EditorMode::Normal,
+        cursor: Cursor::default(),
+        text: Text2dBundle {
+            text: Text::with_section(
+                "Meet the hent editor!",
+                text_style_body,
+                TextAlignment {
+                    vertical: VerticalAlign::Center,
+                    horizontal: HorizontalAlign::Left,
+                },
+            ),
+            transform: Transform::from_xyz(400.0, 0.0, 0.0),
+            ..Default::default()
+        },
+        scroll: Scroll {
+            cur: 0.0,
+            max: 2000.0,
+            acc: 4000.0,
+            state: ScrollState::Idle,
+        },
+        commands: EditorCommands::new(),
+        layout: Layout::Dvorak,
+    };
+
+    commands.spawn_bundle(editor);
 }
 
 fn input(
@@ -162,84 +107,88 @@ fn input(
     key_evr
         .iter()
         .for_each(|k| keystrokes.eat_keyboard_input(k));
-
 }
 
 fn control(
-    mut com_evw: EventWriter<Command>,
-    mut m: ResMut<Mode>,
+    //mut com_evw: EventWriter<Command>,
+    //mut m: ResMut<Mode>,
     keystrokes: Res<KeyStrokes>,
-    mut scroll: Query<&mut Scroll>,
-    time: Res<Time>,
+    mut editor_query: Query<(
+        &mut EditorMode,
+        &mut EditorCommands,
+        &mut Layout,
+        &mut Scroll,
+    )>,
 ) {
-    let p = keystrokes.get_just_pressed();
-    if !p.is_empty(){
-        println!("just pressed: {:?}", keystrokes.get_just_pressed());
-    }
-
-    let d = keystrokes.get_down();
-    if !d.is_empty(){
-        println!("down: {:?}", keystrokes.get_down());
-    }
-
-    let dp = keystrokes.get_double_pressed();
-    if !dp.is_empty(){
-        println!("double-pressed: {:?}", keystrokes.get_double_pressed());
-    }
-
-    let p = keystrokes.get_just_pressed().into_iter().next();
+    //takes one of each
+    let p = keystrokes.get_pressed().into_iter().next();
+    let jp = keystrokes.get_just_pressed().into_iter().next();
     let d = keystrokes.get_down().into_iter().next();
     let dp = keystrokes.get_double_pressed().into_iter().next();
 
-    let dt = time.delta_seconds();
-
-    let scroll = scroll.iter_mut();
+    let (mut m, mut c, mut l, mut s) = editor_query.single_mut().unwrap();
 
     match *m {
-        Mode::Normal => {
-            if let Some(p) = p {
-                match p {
-                    34 => *m = Mode::Insert,
+        EditorMode::Normal => {
+            if let Some(jp) = jp {
+                match jp {
+                    34 => *m = EditorMode::Insert,
                     //35 => com_evw.send(Command::RemoveLine), //prob to be changed
-                    36 => com_evw.send(Command::MoveCursorV(1)),
-                     //J move cursor left (down in the future)
-                    37 => com_evw.send(Command::MoveCursorH(1)),
-                     //H move cursor right
+                    36 => {
+                        if keystrokes.get_pressed().contains(&57) {
+                            c.push(EditorCommand::MoveCursorUp(1))
+                        } else {
+                            c.push(EditorCommand::MoveCursorDown(1))
+                        }
+                    }
+
+                    //J move cursor left (down in the future)
+                    37 => {
+                        if keystrokes.get_pressed().contains(&57) {
+                            c.push(EditorCommand::MoveCursorLeft(1))
+                        } else {
+                            c.push(EditorCommand::MoveCursorRight(1))
+                        }
+                    }
+                    //H move cursor right
                     _ => {}
                 }
             }
-            if let Some(d) = d { //a key is down
-                match d {
-                    50 => scroll.for_each(|mut s| s.cur = (s.cur - (s.acc * dt)).clamp(-s.max, 0.0)),
-                    51 => scroll.for_each(|mut s| s.cur = (s.cur + (s.acc * dt)).clamp(0.0, s.max)),
-                     //scrollup
-                    
+            if let Some(p) = p {
+                //a key is down
+                match p {
+                    50 => s.state = ScrollState::ScrollingDown,
+                    51 => s.state = ScrollState::ScrollingUp,
+                    //scrollup
 
                     //57 => *m = Mode::Input,
                     _ => {}
                 }
+            } else {
+                 
             }
-
 
             if let Some(dp) = dp {
                 match dp {
-                    35 => com_evw.send(Command::RemoveLine),
+                    35 => c.push(EditorCommand::RemoveLine),
                     _ => {}
                 }
             }
         }
-        Mode::Insert => {
-            if let Some(p) = p {
+        EditorMode::Insert => {
+            if let Some(p) = jp {
                 if p == 1 || p == 58 {
                     //esc or caps key to go back to Normal mode
-                    *m = Mode::Normal;
-                } if p == 28 { //enter
-                    com_evw.send(Command::AddLine);
-                }
-                else {
+                    *m = EditorMode::Normal;
+                } else if p == 42 {
+                    l.switch();
+                } else if p == 28 {
+                    //enter
+                    c.push(EditorCommand::AddLine);
+                } else {
                     //let mut nt = scdv(sc).to_string();
 
-                    com_evw.send(Command::PutChar(scdv(p)));
+                    c.push(EditorCommand::PutChar(l.scch(p)));
                 }
             }
         }
@@ -247,67 +196,73 @@ fn control(
 }
 
 fn process(
-    mut com_evr: EventReader<Command>,
-    mut cursor: ResMut<Cursor>,
-    mut txt: Query<&mut Text, With<UiLines>>,
-    mut m: ResMut<Mode>,
+    //mut com_evr: EventReader<Command>,
+    mut query: Query<(&mut Text, &mut EditorCommands, &mut Cursor)>,
 ) {
+    let (mut txt, mut commands, mut cursor) = query.single_mut().unwrap();
 
-    //let text = &mut txt.iter_mut().next().unwrap().sections[0].value;
+    while commands.busy() {
+        let c = commands.pop().unwrap();
 
-    for com in com_evr.iter() {
-        println!("got a command! {:?}", com);
+        println!("got a command! {:?}", c);
 
-        match com {
-            &Command::MoveCursorH(d) => { //put this code inside of the Cursor itself 
-                if d < 0{
-                    cursor.col-=d.wrapping_abs() as usize;
-                } else {
-                    cursor.col+=d as usize;
-                }
-                cursor.ind = None;
-                println!("Moved cursor. col: {}", cursor.col);
-            },
-
-            &Command::MoveCursorV(d) =>{//put this code inside of the Cursor itself 
-                if d < 0{
-                    cursor.line-=d.wrapping_abs() as usize;
-                } else {
-                    cursor.line+=d as usize;
-                }
-                cursor.ind = None;
+        match c {
+            EditorCommand::MoveCursorDown(p) => {
+                cursor.move_down(p);
+                println!("Moved cursor. line: {}", cursor.line);
+            }
+            EditorCommand::MoveCursorUp(p) => {
+                cursor.move_up(p);
                 println!("Moved cursor. line: {}", cursor.line);
             }
 
-            Command::AddLine => {
-                if let Some(ts) = txt.single_mut().unwrap().sections.get_mut(cursor.line){ //bug: does nothing when there are no lines
+            EditorCommand::MoveCursorRight(p) => {
+                cursor.move_right(p);
+                println!("Moved cursor. col: {}", cursor.col);
+            }
+
+            EditorCommand::MoveCursorLeft(p) => {
+                cursor.move_left(p);
+                println!("Moved cursor. col: {}", cursor.col);
+            }
+
+            EditorCommand::AddLine => {
+                if let Some(ts) = txt.sections.get_mut(cursor.line) {
+                    //bug: does nothing when there are no lines
                     let style = ts.style.clone();
-                    cursor.line+=1;
+                    cursor.line += 1;
                     cursor.ind = None;
-                    if ts.value.chars().last() != Some('\n'){ //kostyl
+                    if ts.value.chars().last() != Some('\n') {
+                        //kostyl
                         ts.value.push('\n');
                     }
-                    txt.single_mut().unwrap().sections.insert(cursor.line, TextSection{value: "new text section!".to_string(), style});
+                    txt.sections.insert(
+                        cursor.line,
+                        TextSection {
+                            value: "new text section!".to_string(),
+                            style,
+                        },
+                    );
                 }
-
-
-
             }
 
-            Command::RemoveLine => {
+            EditorCommand::RemoveLine => {
                 println!("removing a line... cursor.line: {}", cursor.line);
-                txt.iter_mut().next().unwrap().sections.remove(cursor.line);
-                //text.clear();
-                cursor.line = cursor.line.saturating_sub(1);
-                cursor.col = 0;
-                cursor.ind = None;
-                println!("removed a line! cursor.line: {}", cursor.line);
+                if txt.sections.get(cursor.line).is_some() {
+                    txt.sections.remove(cursor.line);
+                    //text.clear();
+                    cursor.line = cursor.line.saturating_sub(1);
+                    cursor.ind = None;
+                    println!("removed a line! cursor.line: {}", cursor.line);
+                } else {
+                    println!("this line does not exists ({})", cursor.line);
+                }
             }
-            &Command::PutChar(ch) => {
+            EditorCommand::PutChar(ch) => {
                 //refactor to another function/system or validate(?) the ind on mutations directly
                 //updates the ind so it safely fits chars, also updates cursor.col to fit the line
 
-                if let Some(ts) = txt.single_mut().unwrap().sections.get_mut(cursor.line){
+                if let Some(ts) = txt.sections.get_mut(cursor.line) {
                     if cursor.ind.is_none() {
                         cursor.ind = Some(0);
                         let mut colmax = 0;
@@ -322,7 +277,7 @@ fn process(
                         cursor.col = colmax; //limits the col to the end of the line
                         println!();
                     }
-    
+
                     ts.value.insert(cursor.ind.unwrap_or(0), ch);
                     if let Some(i) = &mut cursor.ind {
                         let l = ch.len_utf8();
@@ -333,11 +288,7 @@ fn process(
                         }
                     }
                     println!("cursor: col {}, ind {:?}", cursor.col, cursor.ind);
-
-                } else {
-                    println!("cursor out of range! (cursor.line: {})", cursor.line);
                 }
-
             }
             _ => {}
         }
@@ -346,19 +297,39 @@ fn process(
 
 fn scroll(time: Res<Time>, mut q: Query<(&mut Transform, &mut Scroll)>) {
     let dt = time.delta_seconds();
-    for (mut transform, mut scroll) in q.iter_mut() {
-        //println!("scroll.cur: {}", scroll.cur);
-        transform.translation.y += dt * scroll.cur;
-
-        //scroll.cur-=scroll.cur.signum()*scroll.acc*dt; //rework this to completly new scroll system later 
+    for (mut transform, mut s) in q.iter_mut() {
+        //println!("scroll.cur: {}", s.cur);
+        transform.translation.y += dt * s.cur;
+        
+        match s.state {
+            ScrollState::ScrollingUp => s.cur = (s.cur + (s.acc * dt)).clamp(0.0, s.max),
+            ScrollState::ScrollingDown => s.cur = (s.cur - (s.acc * dt)).clamp(-s.max, 0.0),
+            ScrollState::Idle => {
+                if s.cur.abs() < 10.0{
+                    s.cur = 0.0;
+                }else{
+                    s.cur -= s.cur.signum()*s.acc*dt;
+                }
+            }
+        }
+        s.state = ScrollState::Idle;
     }
 }
 
-fn update_mode_label(mut t: Query<&mut Text, With<UiCurrentMode>>, m: Res<Mode>) {
+fn update_mode_label(
+    mut t: Query<&mut Text, With<UiCurrentMode>>,
+    status_query: Query<(&EditorMode, &Cursor)>,
+) {
     let mut t = t.single_mut().unwrap();
 
-    match *m {
-        Mode::Normal => t.sections[0].value = "NORMAL MODE".to_string(),
-        Mode::Insert => t.sections[0].value = "INSERT MODE".to_string(),
+    if let Some((m, c)) = status_query.single().ok() {
+        match m {
+            EditorMode::Normal => {
+                t.sections[0].value = format!("NORMAL MODE\nline: {} col: {}", c.line, c.col)
+            }
+            EditorMode::Insert => {
+                t.sections[0].value = format!("INSERT MODE\nline: {} col: {}", c.line, c.col)
+            }
+        }
     }
 }

@@ -10,6 +10,18 @@ pub struct KeyStrokes {
     releases: HashMap<u32, Release>,
 }
 
+#[derive(Debug)]
+pub struct Stroke {
+    pub duration: f32,
+    repetition: u16,
+}
+#[derive(Debug)]
+pub struct Release {
+    pub duration: f32,
+    repetition: u16,
+}
+
+
 impl KeyStrokes {
     pub fn new() -> Self {
         KeyStrokes {
@@ -36,21 +48,21 @@ impl KeyStrokes {
         let mut res = StableHashSet::default();
 
         for (sc, stroke) in &self.strokes {
-            // if stroke.duration > crate::DOWN_INTERVAL {
-            //     res.insert(*sc);
-            // }
+            if stroke.duration > crate::DOWN_INTERVAL {
+                res.insert(*sc);
+            }
+        }
+        res
+    }
+
+    pub fn get_pressed(&self) -> StableHashSet<u32> {
+        let mut res = StableHashSet::default();
+
+        for (sc, _) in &self.strokes {
             res.insert(*sc);
         }
         res
     }
-    // pub fn get_active(&self)-> StableHashSet<u32> {
-    //     let mut res = StableHashSet::default();
-
-    //     for (sc, _) in &self.strokes {
-    //             res.insert(*sc);
-    //     }
-    //     res
-    // }
 
     pub fn get_double_pressed(&self) -> StableHashSet<u32> {
         let mut res = StableHashSet::default();
@@ -136,13 +148,3 @@ impl KeyStrokes {
     }
 }
 
-#[derive(Debug)]
-pub struct Stroke {
-    pub duration: f32,
-    repetition: u16,
-}
-#[derive(Debug)]
-pub struct Release {
-    pub duration: f32,
-    repetition: u16,
-}
